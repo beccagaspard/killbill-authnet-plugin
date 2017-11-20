@@ -16,6 +16,27 @@
 
 package com.womply.billing.killbill.plugins;
 
+import java.math.BigDecimal;
+import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+import org.killbill.billing.catalog.api.Currency;
+import org.killbill.billing.osgi.libs.killbill.OSGIKillbillAPI;
+import org.killbill.billing.osgi.libs.killbill.OSGIKillbillLogService;
+import org.killbill.billing.payment.api.PluginProperty;
+import org.killbill.billing.payment.api.TransactionType;
+import org.killbill.billing.payment.plugin.api.PaymentMethodInfoPlugin;
+import org.killbill.billing.payment.plugin.api.PaymentTransactionInfoPlugin;
+import org.killbill.billing.plugin.api.payment.PluginPaymentMethodInfoPlugin;
+import org.killbill.billing.tenant.api.Tenant;
+import org.killbill.billing.tenant.api.TenantApiException;
+import org.killbill.billing.util.callcontext.CallContext;
+import org.killbill.billing.util.customfield.CustomField;
+import org.osgi.service.log.LogService;
+
 import com.womply.billing.killbill.plugins.authentication.AuthorizeNetAuthenticationService;
 import com.womply.billing.killbill.plugins.db.AuthorizeNetDAO;
 import com.womply.billing.killbill.plugins.jooq.tables.records.AuthorizeNetPaymentMethodsRecord;
@@ -25,15 +46,21 @@ import com.womply.billing.killbill.plugins.models.AuthorizeNetPaymentTransaction
 import com.womply.billing.killbill.plugins.models.AuthorizeNetTransactionInfo;
 import com.womply.billing.killbill.plugins.transaction.RefundPaymentHelper;
 import com.womply.killbill.resources.models.PaymentGatewayAccount;
-
 import net.authorize.api.contract.v1.ANetApiResponse;
 import net.authorize.api.contract.v1.AuthenticateTestRequest;
 import net.authorize.api.contract.v1.AuthenticateTestResponse;
 import net.authorize.api.contract.v1.CreateCustomerProfileRequest;
 import net.authorize.api.contract.v1.CreateCustomerProfileResponse;
+import net.authorize.api.contract.v1.CreditCardMaskedType;
+import net.authorize.api.contract.v1.CustomerAddressType;
+import net.authorize.api.contract.v1.CustomerPaymentProfileMaskedType;
 import net.authorize.api.contract.v1.CustomerProfileType;
 import net.authorize.api.contract.v1.DeleteCustomerPaymentProfileRequest;
 import net.authorize.api.contract.v1.DeleteCustomerPaymentProfileResponse;
+import net.authorize.api.contract.v1.GetCustomerPaymentProfileRequest;
+import net.authorize.api.contract.v1.GetCustomerPaymentProfileResponse;
+import net.authorize.api.contract.v1.GetCustomerProfileRequest;
+import net.authorize.api.contract.v1.GetCustomerProfileResponse;
 import net.authorize.api.contract.v1.MerchantAuthenticationType;
 import net.authorize.api.contract.v1.MessageTypeEnum;
 import net.authorize.api.contract.v1.MessagesType;
@@ -41,23 +68,8 @@ import net.authorize.api.contract.v1.TransactionTypeEnum;
 import net.authorize.api.controller.AuthenticateTestController;
 import net.authorize.api.controller.CreateCustomerProfileController;
 import net.authorize.api.controller.DeleteCustomerPaymentProfileController;
-import org.killbill.billing.catalog.api.Currency;
-import org.killbill.billing.osgi.libs.killbill.OSGIKillbillAPI;
-import org.killbill.billing.osgi.libs.killbill.OSGIKillbillLogService;
-import org.killbill.billing.payment.api.TransactionType;
-import org.killbill.billing.payment.plugin.api.PaymentTransactionInfoPlugin;
-import org.killbill.billing.tenant.api.Tenant;
-import org.killbill.billing.tenant.api.TenantApiException;
-import org.killbill.billing.util.callcontext.CallContext;
-import org.killbill.billing.util.customfield.CustomField;
-import org.osgi.service.log.LogService;
-
-import java.math.BigDecimal;
-import java.sql.SQLException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import net.authorize.api.controller.GetCustomerPaymentProfileController;
+import net.authorize.api.controller.GetCustomerProfileController;
 
 /**
  * Helper class for Authorize Net Plugin Api.
@@ -180,6 +192,137 @@ public class AuthorizeNetService {
                 tenantId, rawColumnNames);
 
         return new AuthorizeNetPaymentMethod(paymentMethodData);
+    }
+
+    public List<PaymentMethodInfoPlugin> getPaymentMethods(final UUID kbAccountId, final boolean refreshFromGateway, final CallContext context) throws TenantApiException {
+
+        List<AuthorizeNetPaymentMethodsRecord> currentAuthorizeNetPaymentMethods = dao.getPaymentMethods(kbAccountId, context.getTenantId());
+
+        if (!refreshFromGateway) {
+            //return the payment methods we currently have stored in the db
+            List<PaymentMethodInfoPlugin> currentPaymentMethods = new ArrayList<>();
+            if(currentAuthorizeNetPaymentMethods == null) {
+                return currentPaymentMethods;
+            }
+            for (AuthorizeNetPaymentMethodsRecord record : currentAuthorizeNetPaymentMethods) {
+                UUID paymentMethodId = UUID.fromString(record.getKbPaymentMethodId());
+                String externalPaymentMethodRecordId = record.getAuthorizeNetPaymentProfileId();
+                PaymentMethodInfoPlugin paymentMethodInfo = new PluginPaymentMethodInfoPlugin(kbAccountId, paymentMethodId, false, externalPaymentMethodRecordId);
+                currentPaymentMethods.add(paymentMethodInfo);
+            }
+            return currentPaymentMethods;
+        }
+
+        //else grab payment methods from authorize.net
+        List<CustomField> customFields = osgiKillbillAPI.getCustomFieldUserApi().getCustomFieldsForAccount(kbAccountId, context);
+        String authNetCustomerProfileId = getAuthNetCustomerProfileIdFromCustomFields(kbAccountId, customFields);
+
+        GetCustomerProfileRequest apiRequest = getGetCustomerProfileRequest();
+        MerchantAuthenticationType authentication = authenticationService.getAuthenticationForTenant(context.getTenantId());
+        apiRequest.setMerchantAuthentication(authentication);
+        apiRequest.setCustomerProfileId(authNetCustomerProfileId);
+
+        GetCustomerProfileController controller = getGetCustomerProfileController(apiRequest);
+        controller.execute();
+        GetCustomerProfileResponse response = controller.getApiResponse();
+
+        verifyAuthNetResponseLogErrors("Get customer profile for profile id " + authNetCustomerProfileId, response);
+        List<CustomerPaymentProfileMaskedType> paymentProfiles = response.getProfile().getPaymentProfiles();
+
+        List<PaymentMethodInfoPlugin> refreshedPaymentMethods = new ArrayList<>();
+        for (CustomerPaymentProfileMaskedType paymentProfile : paymentProfiles) {
+
+            //match to existing kb payment methods
+            UUID paymentMethodId = null;
+            for (AuthorizeNetPaymentMethodsRecord r : currentAuthorizeNetPaymentMethods) {
+                if (r.getAuthorizeNetPaymentProfileId().equals(paymentProfile.getCustomerPaymentProfileId())) {
+                    paymentMethodId = UUID.fromString(r.getKbPaymentMethodId());
+                }
+            }
+
+            PaymentMethodInfoPlugin paymentMethodInfo = new PluginPaymentMethodInfoPlugin(kbAccountId, paymentMethodId, false, paymentProfile.getCustomerPaymentProfileId());
+            refreshedPaymentMethods.add(paymentMethodInfo);
+        }
+        return refreshedPaymentMethods;
+    }
+
+    //hook for the tests
+    protected GetCustomerProfileController getGetCustomerProfileController(GetCustomerProfileRequest request) {
+        return new GetCustomerProfileController(request);
+    }
+
+    //hook for the tests
+    protected GetCustomerProfileRequest getGetCustomerProfileRequest() {
+        return new GetCustomerProfileRequest();
+    }
+
+
+    public void refreshPaymentMethods(final UUID kbAccountId, final List<PaymentMethodInfoPlugin> paymentMethods, final Iterable<PluginProperty> properties, final CallContext context) throws TenantApiException {
+
+        List<CustomField> customFields = osgiKillbillAPI.getCustomFieldUserApi().getCustomFieldsForAccount(kbAccountId, context);
+        String authNetCustomerProfileId = getAuthNetCustomerProfileIdFromCustomFields(kbAccountId, customFields);
+
+        for (PaymentMethodInfoPlugin paymentMethod : paymentMethods) {
+
+            String authNetPaymentProfileId = paymentMethod.getExternalPaymentMethodId();
+
+            AuthorizeNetPaymentMethodsRecord paymentMethodRecord = dao.getPaymentMethodForOperation(kbAccountId, paymentMethod.getPaymentMethodId(), context.getTenantId());
+            //if payment method doesn't already exist in the db, create a new one
+            if (paymentMethodRecord == null) {
+                paymentMethodRecord = new AuthorizeNetPaymentMethodsRecord();
+                paymentMethodRecord.setKbPaymentMethodId(paymentMethod.getPaymentMethodId().toString());
+                paymentMethodRecord.setKbAccountId(kbAccountId.toString());
+                paymentMethodRecord.setKbTenantId(context.getTenantId().toString());
+                paymentMethodRecord.setAuthorizeNetCustomerProfileId(authNetCustomerProfileId);
+                paymentMethodRecord.setAuthorizeNetPaymentProfileId(authNetPaymentProfileId);
+            }
+
+            //get payment method info from authorize.net
+            GetCustomerPaymentProfileRequest apiRequest = new GetCustomerPaymentProfileRequest();
+            MerchantAuthenticationType authentication = authenticationService.getAuthenticationForTenant(context.getTenantId());
+            apiRequest.setMerchantAuthentication(authentication);
+            apiRequest.setCustomerProfileId(authNetCustomerProfileId);
+            apiRequest.setCustomerPaymentProfileId(authNetPaymentProfileId);
+            apiRequest.setUnmaskExpirationDate(true);
+
+            GetCustomerPaymentProfileController controller = new GetCustomerPaymentProfileController(apiRequest);
+            controller.execute();
+            GetCustomerPaymentProfileResponse response = controller.getApiResponse();
+            verifyAuthNetResponseLogErrors("Get customer payment profile for profile id " + authNetPaymentProfileId, response);
+
+            //populate customer address fields
+            CustomerAddressType customerAddress = response.getPaymentProfile().getBillTo();
+            if (customerAddress != null) {
+                paymentMethodRecord.setCcFirstName(customerAddress.getFirstName());
+                paymentMethodRecord.setCcLastName(customerAddress.getLastName());
+                paymentMethodRecord.setAddress(customerAddress.getAddress());
+                paymentMethodRecord.setCity(customerAddress.getCity());
+                paymentMethodRecord.setZip(customerAddress.getZip());
+                paymentMethodRecord.setState(customerAddress.getState());
+                paymentMethodRecord.setCountry(customerAddress.getCountry());
+            }
+
+            //populate credit card fields
+            CreditCardMaskedType creditCard = response.getPaymentProfile().getPayment().getCreditCard();
+            if (creditCard != null) {
+                paymentMethodRecord.setCcType(creditCard.getCardType());
+                if (creditCard.getExpirationDate() != null) {
+                    //expected format is yyyy-MM
+                    String[] expirationDate = creditCard.getExpirationDate().split("-");
+                    paymentMethodRecord.setCcExpYear(expirationDate[0]);
+                    paymentMethodRecord.setCcExpMonth(expirationDate[1]);
+                }
+                paymentMethodRecord.setCcLast_4(creditCard.getCardNumber());
+            }
+
+            if (paymentMethodRecord.getRecordId() == null) {
+                dao.addPaymentMethod(paymentMethodRecord);
+            } else {
+                dao.updatePaymentMethod(paymentMethodRecord);
+            }
+
+        }
+
     }
 
     /**

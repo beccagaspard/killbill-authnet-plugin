@@ -35,8 +35,14 @@ public interface AuthorizeNetDAO {
                           final Map<String, String> properties,
                           final UUID kbTenantId) throws SQLException;
 
+    void addPaymentMethod(AuthorizeNetPaymentMethodsRecord record);
+
+    void updatePaymentMethod(AuthorizeNetPaymentMethodsRecord record);
+
     Map<String, Object> getPaymentMethod(UUID kbAccountId, UUID kbPaymentMethodId,
                                          UUID tenantId, boolean rawColumns);
+
+    List<AuthorizeNetPaymentMethodsRecord> getPaymentMethods(UUID kbAccountId, UUID tenantId);
 
     void logCustomerProfileCreation(String customerId, String customerProfileId, UUID tenantId);
 

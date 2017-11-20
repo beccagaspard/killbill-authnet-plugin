@@ -176,7 +176,12 @@ public class AuthorizeNetPaymentPluginApi implements PaymentPluginApi {
      */
     @Override
     public List<PaymentMethodInfoPlugin> getPaymentMethods(final UUID kbAccountId, final boolean refreshFromGateway, final Iterable<PluginProperty> properties, final CallContext context) throws PaymentPluginApiException {
-        throw new UnsupportedOperationException();
+        try {
+            return service.getPaymentMethods(kbAccountId, refreshFromGateway, context);
+        } catch (final Exception e) {
+            throw new PaymentPluginApiException("Unable to get payment methods for account  " +
+                                                kbAccountId, e);
+        }
     }
 
     @Override
@@ -186,7 +191,12 @@ public class AuthorizeNetPaymentPluginApi implements PaymentPluginApi {
 
     @Override
     public void resetPaymentMethods(final UUID kbAccountId, final List<PaymentMethodInfoPlugin> paymentMethods, final Iterable<PluginProperty> properties, final CallContext context) throws PaymentPluginApiException {
-        throw new UnsupportedOperationException();
+        try {
+            service.refreshPaymentMethods(kbAccountId, paymentMethods, properties, context);
+        } catch (final Exception e) {
+            throw new PaymentPluginApiException("Unable to reset payment methods for account  " +
+                                                kbAccountId, e);
+        }
     }
 
     @Override

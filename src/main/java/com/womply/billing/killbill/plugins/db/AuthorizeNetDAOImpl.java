@@ -16,17 +16,14 @@
 
 package com.womply.billing.killbill.plugins.db;
 
-import static com.womply.billing.killbill.plugins.jooq.tables.AuthorizeNetCustomerProfiles.AUTHORIZE_NET_CUSTOMER_PROFILES;
-import static com.womply.billing.killbill.plugins.jooq.tables.AuthorizeNetPaymentMethods.AUTHORIZE_NET_PAYMENT_METHODS;
-import static com.womply.billing.killbill.plugins.jooq.tables.AuthorizeNetRequests.AUTHORIZE_NET_REQUESTS;
-import static com.womply.billing.killbill.plugins.jooq.tables.AuthorizeNetTransactions.AUTHORIZE_NET_TRANSACTIONS;
-
-import com.womply.billing.killbill.plugins.jooq.tables.records.AuthorizeNetCustomerProfilesRecord;
-import com.womply.billing.killbill.plugins.jooq.tables.records.AuthorizeNetPaymentMethodsRecord;
-import com.womply.billing.killbill.plugins.jooq.tables.records.AuthorizeNetRequestsRecord;
-import com.womply.billing.killbill.plugins.jooq.tables.records.AuthorizeNetTransactionsRecord;
-import com.womply.billing.killbill.plugins.models.AuthorizeNetPaymentMethod;
-import com.womply.billing.killbill.plugins.models.AuthorizeNetTransactionInfo;
+import java.sql.SQLException;
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import javax.sql.DataSource;
 
 import org.apache.commons.lang3.StringUtils;
 import org.jooq.DSLContext;
@@ -37,15 +34,17 @@ import org.jooq.SelectConditionStep;
 import org.jooq.impl.DSL;
 import org.killbill.billing.payment.api.TransactionType;
 
-import java.sql.SQLException;
-import java.sql.Timestamp;
-import java.time.Instant;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
-import javax.sql.DataSource;
+import com.womply.billing.killbill.plugins.jooq.tables.records.AuthorizeNetCustomerProfilesRecord;
+import com.womply.billing.killbill.plugins.jooq.tables.records.AuthorizeNetPaymentMethodsRecord;
+import com.womply.billing.killbill.plugins.jooq.tables.records.AuthorizeNetRequestsRecord;
+import com.womply.billing.killbill.plugins.jooq.tables.records.AuthorizeNetTransactionsRecord;
+import com.womply.billing.killbill.plugins.models.AuthorizeNetPaymentMethod;
+import com.womply.billing.killbill.plugins.models.AuthorizeNetTransactionInfo;
 
+import static com.womply.billing.killbill.plugins.jooq.tables.AuthorizeNetCustomerProfiles.AUTHORIZE_NET_CUSTOMER_PROFILES;
+import static com.womply.billing.killbill.plugins.jooq.tables.AuthorizeNetPaymentMethods.AUTHORIZE_NET_PAYMENT_METHODS;
+import static com.womply.billing.killbill.plugins.jooq.tables.AuthorizeNetRequests.AUTHORIZE_NET_REQUESTS;
+import static com.womply.billing.killbill.plugins.jooq.tables.AuthorizeNetTransactions.AUTHORIZE_NET_TRANSACTIONS;
 
 /**
  * Database operations for AuthorizeNet plugin.
@@ -92,6 +91,24 @@ public class AuthorizeNetDAOImpl implements AuthorizeNetDAO {
         record.store();
     }
 
+    @Override
+    public void addPaymentMethod(AuthorizeNetPaymentMethodsRecord record) {
+        AuthorizeNetPaymentMethodsRecord newRecord = db.newRecord(AUTHORIZE_NET_PAYMENT_METHODS);
+        newRecord.from(record);
+
+        Timestamp now = now();
+        newRecord.setStatus(STATUS_ACTIVE);
+        newRecord.setCreatedAt(now);
+        newRecord.setUpdatedAt(now);
+        newRecord.store();
+    }
+
+    @Override
+    public void updatePaymentMethod(AuthorizeNetPaymentMethodsRecord record) {
+        record.setUpdatedAt(now());
+        record.update();
+    }
+
     protected void verifyPaymentMethodProperties(final UUID kbAccountId, final UUID kbPaymentMethodId,
                                                  final Map<String, String> properties) {
 
@@ -113,6 +130,13 @@ public class AuthorizeNetDAOImpl implements AuthorizeNetDAO {
         }
 
         return getPaymentMethodStep.fetchOne().intoMap();
+    }
+
+    @Override
+    public List<AuthorizeNetPaymentMethodsRecord> getPaymentMethods(final UUID kbAccountId, final UUID tenantId) {
+        final SelectConditionStep getPaymentMethodsStep = getPaymentMethodsRawQuery(kbAccountId, tenantId);
+        Result<AuthorizeNetPaymentMethodsRecord> result = getPaymentMethodsStep.fetch();
+        return result.into(AuthorizeNetPaymentMethodsRecord.class);
     }
 
     @Override
@@ -234,6 +258,13 @@ public class AuthorizeNetDAOImpl implements AuthorizeNetDAO {
                                         .and(AUTHORIZE_NET_PAYMENT_METHODS.STATUS.equal(STATUS_ACTIVE)))));
     }
 
+    protected SelectConditionStep<AuthorizeNetPaymentMethodsRecord> getPaymentMethodsRawQuery(UUID kbAccountId, UUID tenantId) {
+        return db.selectFrom(AUTHORIZE_NET_PAYMENT_METHODS)
+                 .where(AUTHORIZE_NET_PAYMENT_METHODS.KB_ACCOUNT_ID.equal(kbAccountId.toString())
+                         .and(AUTHORIZE_NET_PAYMENT_METHODS.KB_TENANT_ID.equal(tenantId.toString())
+                                .and(AUTHORIZE_NET_PAYMENT_METHODS.KB_TENANT_ID.equal(tenantId.toString())
+                                        .and(AUTHORIZE_NET_PAYMENT_METHODS.STATUS.equal(STATUS_ACTIVE)))));
+    }
 
     protected SelectConditionStep<AuthorizeNetTransactionsRecord> getTransactionsForPaymentQuery(UUID kbAccountId,
                                                                                                   UUID kbPaymentId) {

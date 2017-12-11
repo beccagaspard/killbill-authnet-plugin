@@ -215,7 +215,14 @@ public class AuthorizeNetService {
 
         //else grab payment methods from authorize.net
         List<CustomField> customFields = osgiKillbillAPI.getCustomFieldUserApi().getCustomFieldsForAccount(kbAccountId, context);
-        String authNetCustomerProfileId = getAuthNetCustomerProfileIdFromCustomFields(kbAccountId, customFields);
+        String authNetCustomerProfileId = null;
+        try {
+            authNetCustomerProfileId = getAuthNetCustomerProfileIdFromCustomFields(kbAccountId, customFields);
+        }
+        catch(RuntimeException e) {
+            //no authnet profile id is ok here, account could be using a different payment plugin, just return
+            return new ArrayList<>();
+        }
 
         GetCustomerProfileRequest apiRequest = getGetCustomerProfileRequest();
         MerchantAuthenticationType authentication = authenticationService.getAuthenticationForTenant(context.getTenantId());
@@ -230,6 +237,9 @@ public class AuthorizeNetService {
         List<CustomerPaymentProfileMaskedType> paymentProfiles = response.getProfile().getPaymentProfiles();
 
         List<PaymentMethodInfoPlugin> refreshedPaymentMethods = new ArrayList<>();
+        if(paymentProfiles == null || paymentProfiles.isEmpty()) {
+            return refreshedPaymentMethods; //no payment methods found in authnet so just return an empty list
+        }
         for (CustomerPaymentProfileMaskedType paymentProfile : paymentProfiles) {
 
             //match to existing kb payment methods
@@ -260,7 +270,14 @@ public class AuthorizeNetService {
     public void refreshPaymentMethods(final UUID kbAccountId, final List<PaymentMethodInfoPlugin> paymentMethods, final Iterable<PluginProperty> properties, final CallContext context) throws TenantApiException {
 
         List<CustomField> customFields = osgiKillbillAPI.getCustomFieldUserApi().getCustomFieldsForAccount(kbAccountId, context);
-        String authNetCustomerProfileId = getAuthNetCustomerProfileIdFromCustomFields(kbAccountId, customFields);
+        String authNetCustomerProfileId = null;
+        try {
+            authNetCustomerProfileId = getAuthNetCustomerProfileIdFromCustomFields(kbAccountId, customFields);
+        }
+        catch(RuntimeException e) {
+            //no authnet profile id is ok here, account could be using a different payment plugin, just return
+            return;
+        }
 
         for (PaymentMethodInfoPlugin paymentMethod : paymentMethods) {
 

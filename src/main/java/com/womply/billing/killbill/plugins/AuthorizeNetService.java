@@ -240,7 +240,8 @@ public class AuthorizeNetService {
         if(paymentProfiles == null || paymentProfiles.isEmpty()) {
             return refreshedPaymentMethods; //no payment methods found in authnet so just return an empty list
         }
-        for (CustomerPaymentProfileMaskedType paymentProfile : paymentProfiles) {
+        for (int i = 0; i < paymentProfiles.size(); i ++) {
+            CustomerPaymentProfileMaskedType paymentProfile = paymentProfiles.get(i);
 
             //match to existing kb payment methods
             UUID paymentMethodId = null;
@@ -250,9 +251,16 @@ public class AuthorizeNetService {
                 }
             }
 
-            PaymentMethodInfoPlugin paymentMethodInfo = new PluginPaymentMethodInfoPlugin(kbAccountId, paymentMethodId, false, paymentProfile.getCustomerPaymentProfileId());
+            //set the most recent payment method as the default
+            boolean isDefault = false;
+            if(i == 0) {
+                isDefault = true;
+            }
+
+            PaymentMethodInfoPlugin paymentMethodInfo = new PluginPaymentMethodInfoPlugin(kbAccountId, paymentMethodId, isDefault, paymentProfile.getCustomerPaymentProfileId());
             refreshedPaymentMethods.add(paymentMethodInfo);
         }
+
         return refreshedPaymentMethods;
     }
 
